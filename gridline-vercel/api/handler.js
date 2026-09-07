@@ -12,6 +12,18 @@ const {
 // Configurable via la variable d'environnement OWNER_DISCORD_ID sur Vercel.
 const OWNER_DISCORD_ID = process.env.OWNER_DISCORD_ID || "1501730550451273728";
 
+// Liste des permissions granulaires configurables par rôle Discord admin.
+// L'ordre et les clés doivent correspondre exactement à PERMISSION_DEFS côté app.js
+const PERMISSION_KEYS = [
+  "deleteCompany",
+  "createCompany",
+  "editCategory",
+  "editDefaultPercent",
+  "editCoffre",
+  "editDiscordRoleId",
+  "manageAdminRoles",
+];
+
 const uid = () => Math.random().toString(36).slice(2, 9);
 const today = () => new Date().toISOString().slice(0, 10);
 const plusDays = (dateStr, days) => {
@@ -20,21 +32,81 @@ const plusDays = (dateStr, days) => {
   return d.toISOString().slice(0, 10);
 };
 
-function normalizeAdminRoleIds(config) {
-  if (Array.isArray(config.adminRoleIds)) return config.adminRoleIds;
-  if (config.adminRoleId) return [config.adminRoleId]; // migration ancien format
-  return [];
+function emptyPermissions() {
+  const p = {};
+  PERMISSION_KEYS.forEach((k) => (p[k] = false));
+  return p;
+}
+
+function fullPermissions() {
+  const p = {};
+  PERMISSION_KEYS.forEach((k) => (p[k] = true));
+  return p;
+}
+
+function sanitizePermissions(perm) {
+  const p = emptyPermissions();
+  if (perm && typeof perm === "object") {
+    PERMISSION_KEYS.forEach((k) => {
+      if (perm[k] !== undefined) p[k] = !!perm[k];
+    });
+  }
+  return p;
+}
+
+// Convertit la config brute en liste normalisée [{ roleId, permissions }, ...].
+// Gère la migration depuis les anciens formats (adminRoleId string unique,
+// ou adminRoleIds liste simple d'IDs = admin complet historique).
+function normalizeAdminRoles(config) {
+  if (Array.isArray(config.adminRoles)) {
+    return config.adminRoles
+      .map((r) => ({
+        roleId: String((r && r.roleId) || "").trim(),
+        permissions: sanitizePermissions(r && r.permissions),
+      }))
+      .filter((r) => r.roleId);
+  }
+  let ids = [];
+  if (Array.isArray(config.adminRoleIds)) ids = config.adminRoleIds;
+  else if (config.adminRoleId) ids = [config.adminRoleId];
+  return ids
+    .map((id) => String(id).trim())
+    .filter(Boolean)
+    .map((roleId) => ({ roleId, permissions: fullPermissions() }));
 }
 
 function computePermissions(config, companies, discordId, discordRoles) {
-  const adminRoleIds = normalizeAdminRoleIds(config);
-  const bootstrap = adminRoleIds.length === 0;
+  const adminRoles = normalizeAdminRoles(config);
+  const bootstrap = adminRoles.length === 0;
   const isOwner = discordId === OWNER_DISCORD_ID;
-  const isAdmin = isOwner || bootstrap || adminRoleIds.some((id) => discordRoles.includes(id));
+  const matchedRoles = adminRoles.filter((r) => discordRoles.includes(r.roleId));
+  const isAdmin = isOwner || bootstrap || matchedRoles.length > 0;
+
+  let permissions;
+  if (isOwner || bootstrap) {
+    // Le propriétaire, et tout le monde en mode initialisation, a tous les droits.
+    permissions = fullPermissions();
+  } else {
+    permissions = emptyPermissions();
+    matchedRoles.forEach((r) => {
+      PERMISSION_KEYS.forEach((k) => {
+        if (r.permissions[k]) permissions[k] = true;
+      });
+    });
+  }
+
   const patronCompanyIds = companies
     .filter((c) => c.discordRoleId && discordRoles.includes(c.discordRoleId))
     .map((c) => c.id);
-  return { isAdmin: !!isAdmin, isOwner: !!isOwner, patronCompanyIds, bootstrap, adminRoleIds };
+
+  return {
+    isAdmin: !!isAdmin,
+    isOwner: !!isOwner,
+    patronCompanyIds,
+    bootstrap,
+    adminRoles,
+    permissions,
+  };
 }
 
 function findSheet(companies, companyId, sheetId) {
@@ -159,6 +231,7 @@ module.exports = async (req, res) => {
         isOwner: perms.isOwner,
         bootstrap: perms.bootstrap,
         patronCompanyIds: perms.patronCompanyIds,
+        permissions: perms.permissions,
       });
     }
 
@@ -168,35 +241,48 @@ module.exports = async (req, res) => {
     let companies = await readCompanies();
     const perms = computePermissions(config, companies, discord.id, discord.roles);
     const canAccessCompany = (id) => perms.isAdmin || perms.patronCompanyIds.includes(id);
+    const canFull = perms.isOwner || perms.bootstrap;
 
     // /api/config
     if (pathname === "/api/config" && method === "GET") {
       if (!perms.isAdmin) return json(res, 403, { error: "Reserve aux admins" });
-      return json(res, 200, { adminRoleIds: perms.adminRoleIds });
+      return json(res, 200, { adminRoles: perms.adminRoles });
     }
     if (pathname === "/api/config" && method === "PUT") {
-      // Seul le owner peut gerer la liste des roles admin, sauf lors de la toute
-      // premiere initialisation (aucun role admin configure du tout).
-      if (!perms.isOwner && !perms.bootstrap) {
-        return json(res, 403, { error: "Reserve au propriétaire" });
+      // Gerer la liste des roles admin (ajout/retrait/permissions) est reserve
+      // au proprietaire, au mode d'initialisation, ou a quiconque possede la
+      // permission "manageAdminRoles" via un de ses roles.
+      const canManageRoles = canFull || perms.permissions.manageAdminRoles;
+      if (!canManageRoles) {
+        return json(res, 403, { error: "Reserve aux personnes autorisees a gerer les roles admin" });
       }
       const body = await readBody(req);
-      if (Array.isArray(body.adminRoleIds)) {
-        config.adminRoleIds = body.adminRoleIds.map((id) => String(id).trim()).filter(Boolean);
-        delete config.adminRoleId; // nettoie l'ancien format
-      } else if (typeof body.addRoleId === "string" && body.addRoleId.trim()) {
-        const current = normalizeAdminRoleIds(config);
+      let adminRoles = normalizeAdminRoles(config);
+
+      if (typeof body.addRoleId === "string" && body.addRoleId.trim()) {
         const roleId = body.addRoleId.trim();
-        if (!current.includes(roleId)) current.push(roleId);
-        config.adminRoleIds = current;
-        delete config.adminRoleId;
-      } else if (typeof body.removeRoleId === "string") {
-        const current = normalizeAdminRoleIds(config);
-        config.adminRoleIds = current.filter((id) => id !== body.removeRoleId.trim());
-        delete config.adminRoleId;
+        if (!adminRoles.some((r) => r.roleId === roleId)) {
+          adminRoles.push({ roleId, permissions: fullPermissions() });
+        }
       }
+      if (typeof body.removeRoleId === "string" && body.removeRoleId.trim()) {
+        adminRoles = adminRoles.filter((r) => r.roleId !== body.removeRoleId.trim());
+      }
+      if (body.updatePermissions && typeof body.updatePermissions.roleId === "string") {
+        const roleId = body.updatePermissions.roleId.trim();
+        const patch = body.updatePermissions.permissions || {};
+        adminRoles = adminRoles.map((r) =>
+          r.roleId === roleId
+            ? { ...r, permissions: sanitizePermissions({ ...r.permissions, ...patch }) }
+            : r
+        );
+      }
+
+      config.adminRoles = adminRoles;
+      delete config.adminRoleId;
+      delete config.adminRoleIds;
       await writeConfig(config);
-      return json(res, 200, { adminRoleIds: normalizeAdminRoleIds(config) });
+      return json(res, 200, { adminRoles: normalizeAdminRoles(config) });
     }
 
     // /api/companies
@@ -205,7 +291,9 @@ module.exports = async (req, res) => {
       return json(res, 200, visible);
     }
     if (pathname === "/api/companies" && method === "POST") {
-      if (!perms.isAdmin) return json(res, 403, { error: "Reserve aux admins" });
+      if (!(canFull || perms.permissions.createCompany)) {
+        return json(res, 403, { error: "Permission manquante : creer une entreprise" });
+      }
       const c = {
         id: uid(),
         name: "Nouvelle entreprise",
@@ -228,16 +316,42 @@ module.exports = async (req, res) => {
         const c = companies.find((x) => x.id === companyId);
         if (!c) return json(res, 404, { error: "Introuvable" });
         const body = await readBody(req);
+
+        // Le nom reste modifiable par tout admin (pas de permission dediee demandee).
         if (body.name !== undefined) c.name = body.name;
-        if (body.defaultPercent !== undefined) c.defaultPercent = Number(body.defaultPercent);
-        if (body.coffre !== undefined) c.coffre = Number(body.coffre);
-        if (body.discordRoleId !== undefined) c.discordRoleId = String(body.discordRoleId).trim();
-        if (body.category !== undefined) c.category = String(body.category).trim();
+
+        if (body.category !== undefined) {
+          if (!(canFull || perms.permissions.editCategory)) {
+            return json(res, 403, { error: "Permission manquante : modifier la categorie" });
+          }
+          c.category = String(body.category).trim();
+        }
+        if (body.defaultPercent !== undefined) {
+          if (!(canFull || perms.permissions.editDefaultPercent)) {
+            return json(res, 403, { error: "Permission manquante : modifier la commission par defaut" });
+          }
+          c.defaultPercent = Number(body.defaultPercent);
+        }
+        if (body.coffre !== undefined) {
+          if (!(canFull || perms.permissions.editCoffre)) {
+            return json(res, 403, { error: "Permission manquante : modifier le coffre" });
+          }
+          c.coffre = Number(body.coffre);
+        }
+        if (body.discordRoleId !== undefined) {
+          if (!(canFull || perms.permissions.editDiscordRoleId)) {
+            return json(res, 403, { error: "Permission manquante : modifier le role Discord lie" });
+          }
+          c.discordRoleId = String(body.discordRoleId).trim();
+        }
+
         await writeCompanies(companies);
         return json(res, 200, c);
       }
       if (method === "DELETE") {
-        if (!perms.isOwner) return json(res, 403, { error: "Reserve au propriétaire" });
+        if (!(canFull || perms.permissions.deleteCompany)) {
+          return json(res, 403, { error: "Permission manquante : supprimer une entreprise" });
+        }
         companies = companies.filter((c) => c.id !== companyId);
         await writeCompanies(companies);
         return json(res, 200, { ok: true });
