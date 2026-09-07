@@ -30,6 +30,11 @@ const fmt = (n) =>
 
 const SALAIRE_MAX = 10000000;
 
+// Intervalle (ms) de rafraîchissement automatique en arrière-plan, pour que
+// les changements faits par d'autres personnes (verrouillage d'une fiche,
+// ajout d'entreprise, etc.) apparaissent sans avoir à recharger la page.
+const POLL_INTERVAL_MS = 4000;
+
 // ---------- Helper API ----------
 async function api(method, url, body) {
   const res = await fetch(url, {
@@ -51,8 +56,14 @@ async function api(method, url, body) {
 // donc pas ce champ à chaque caractère tapé -> plus de saut de curseur.
 function Field({ value, onCommit, type = "text", disabled, placeholder, style }) {
   const [local, setLocal] = useState(value === null || value === undefined ? "" : String(value));
+  const focusedRef = React.useRef(false);
 
   useEffect(() => {
+    // Si l'utilisateur est en train de taper dans ce champ, on ignore une
+    // mise à jour venant d'un rafraîchissement en arrière-plan (poll) pour
+    // ne pas lui écraser sa saisie en cours. La valeur se resynchronise
+    // normalement au blur suivant.
+    if (focusedRef.current) return;
     setLocal(value === null || value === undefined ? "" : String(value));
   }, [value]);
 
@@ -70,6 +81,9 @@ function Field({ value, onCommit, type = "text", disabled, placeholder, style })
       disabled={disabled}
       placeholder={placeholder}
       value={local}
+      onFocus={() => {
+        focusedRef.current = true;
+      }}
       onChange={(e) => {
         const v = e.target.value;
         if (type === "number") {
@@ -79,7 +93,10 @@ function Field({ value, onCommit, type = "text", disabled, placeholder, style })
           setLocal(v);
         }
       }}
-      onBlur={commit}
+      onBlur={() => {
+        focusedRef.current = false;
+        commit();
+      }}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur();
       }}
@@ -721,6 +738,35 @@ function App() {
       if (!session.isAdmin) setView("company");
     }
   }, [session]);
+
+  // Rafraîchissement automatique en arrière-plan : toutes les X secondes,
+  // au retour sur l'onglet, et quand la fenêtre reprend le focus. Ça évite
+  // qu'une personne continue à modifier une fiche que quelqu'un d'autre
+  // vient de verrouiller, simplement parce que sa page n'était pas à jour.
+  const loggedIn = !!(session && session.loggedIn);
+  const isAdminNow = !!(session && session.isAdmin);
+  const patronCount = (session && session.patronCompanyIds && session.patronCompanyIds.length) || 0;
+
+  useEffect(() => {
+    if (!loggedIn || !(isAdminNow || patronCount > 0)) return undefined;
+
+    const tick = () => {
+      loadSession();
+      loadCompanies();
+    };
+    const intervalId = setInterval(tick, POLL_INTERVAL_MS);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", tick);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", tick);
+    };
+  }, [loggedIn, isAdminNow, patronCount, loadSession, loadCompanies]);
 
   if (session === undefined) {
     return <div className="gx-app" />;
