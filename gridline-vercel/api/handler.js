@@ -424,9 +424,16 @@ module.exports = async (req, res) => {
       if (!s) return json(res, 404, { error: "Introuvable" });
       const e = s.employees.find((x) => x.id === empId);
       if (method === "PATCH") {
-        if (s.locked) return json(res, 423, { error: "Fiche verrouillee" });
         if (!e) return json(res, 404, { error: "Introuvable" });
         const body = await readBody(req);
+        const bodyKeys = Object.keys(body);
+        // La case "Payé" reste modifiable même fiche verrouillée (utile pour
+        // les acces patron qui doivent pouvoir confirmer un paiement apres
+        // coup). Tout autre champ reste bloque tant que la fiche est verrouillee.
+        const isPaidOnly = bodyKeys.length > 0 && bodyKeys.every((k) => k === "paid");
+        if (s.locked && !isPaidOnly) {
+          return json(res, 423, { error: "Fiche verrouillee" });
+        }
         if (body.name !== undefined) e.name = body.name;
         if (body.ca !== undefined) e.ca = Number(body.ca) || 0;
         if (body.percent !== undefined) e.percent = body.percent === null || body.percent === "" ? null : Number(body.percent);
