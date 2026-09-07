@@ -13,6 +13,18 @@ const CATEGORIES = [
   "Garages",
 ];
 
+// Liste des permissions granulaires configurables par rôle Discord admin.
+// L'ordre et les clés doivent correspondre exactement à PERMISSION_KEYS côté handler.js
+const PERMISSION_DEFS = [
+  { key: "deleteCompany", label: "Supprimer des entreprises" },
+  { key: "createCompany", label: "Créer une entreprise" },
+  { key: "editCategory", label: "Modifier la catégorie" },
+  { key: "editDefaultPercent", label: "Modifier la commission par défaut" },
+  { key: "editCoffre", label: "Modifier le total du coffre" },
+  { key: "editDiscordRoleId", label: "Modifier le rôle Discord lié (accès patron)" },
+  { key: "manageAdminRoles", label: "Ajouter / retirer des rôles admin" },
+];
+
 const fmt = (n) =>
   new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(Math.round(n || 0)) + " $";
 
@@ -123,7 +135,7 @@ function BootstrapBanner({ onSaved }) {
     if (!roleId.trim()) return;
     setSaving(true);
     try {
-      await api("PUT", "/api/config", { adminRoleId: roleId.trim() });
+      await api("PUT", "/api/config", { addRoleId: roleId.trim() });
       onSaved();
     } finally {
       setSaving(false);
@@ -134,8 +146,9 @@ function BootstrapBanner({ onSaved }) {
     <div className="gx-bootstrap-banner">
       <div style={{ marginBottom: 8 }}>
         <b>Initialisation :</b> aucun rôle admin n'est encore configuré. Tant que ce n'est pas
-        fait, tout le monde qui se connecte a un accès admin temporaire. Colle ici l'ID du rôle
-        Discord qui doit avoir les droits admin, puis enregistre.
+        fait, tout le monde qui se connecte a un accès admin temporaire complet. Colle ici l'ID
+        du rôle Discord qui doit avoir les droits admin, puis enregistre. Tu pourras ensuite
+        régler ses permissions précises dans "Réglages Discord".
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <input
@@ -154,29 +167,58 @@ function BootstrapBanner({ onSaved }) {
 }
 
 // ---------- Réglages (admin) ----------
-function SettingsView({ isOwner }) {
-  const [adminRoleIds, setAdminRoleIds] = useState([]);
+function SettingsView({ isOwner, permissions }) {
+  const [adminRoles, setAdminRoles] = useState([]);
   const [newRoleId, setNewRoleId] = useState("");
   const [saved, setSaved] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
-  const load = () => api("GET", "/api/config").then((c) => setAdminRoleIds(c.adminRoleIds || []));
+  const canManage = isOwner || !!(permissions && permissions.manageAdminRoles);
+
+  const load = () =>
+    api("GET", "/api/config").then((c) => {
+      setAdminRoles(c.adminRoles || []);
+      setLoaded(true);
+    });
 
   useEffect(() => {
     load();
   }, []);
 
+  const flashSaved = () => {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1800);
+  };
+
   const addRole = async () => {
     if (!newRoleId.trim()) return;
     const c = await api("PUT", "/api/config", { addRoleId: newRoleId.trim() });
-    setAdminRoleIds(c.adminRoleIds || []);
+    setAdminRoles(c.adminRoles || []);
     setNewRoleId("");
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    flashSaved();
   };
 
   const removeRole = async (roleId) => {
     const c = await api("PUT", "/api/config", { removeRoleId: roleId });
-    setAdminRoleIds(c.adminRoleIds || []);
+    setAdminRoles(c.adminRoles || []);
+  };
+
+  const togglePermission = async (roleId, key, value) => {
+    // maj optimiste locale pour un rendu instantané des cases à cocher
+    setAdminRoles((prev) =>
+      prev.map((r) => (r.roleId === roleId ? { ...r, permissions: { ...r.permissions, [key]: value } } : r))
+    );
+    try {
+      const c = await api("PUT", "/api/config", {
+        updatePermissions: { roleId, permissions: { [key]: value } },
+      });
+      setAdminRoles(c.adminRoles || []);
+      flashSaved();
+    } catch (err) {
+      // rollback en cas d'échec (ex: permission refusée côté serveur)
+      load();
+      alert(err.message || "Erreur lors de la mise à jour de la permission");
+    }
   };
 
   return (
@@ -187,26 +229,65 @@ function SettingsView({ isOwner }) {
       <p style={{ color: "var(--muted)", fontSize: 13, margin: "0 0 20px" }}>
         ID du serveur Discord relié : <code style={{ fontFamily: "var(--mono)" }}>1418719996665921546</code>
       </p>
-      <div className="gx-card" style={{ maxWidth: 520 }}>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
-          Rôles Discord donnant les droits admin (accès total : vue d'ensemble + toutes les
-          entreprises). Plusieurs rôles peuvent être ajoutés.
+      <div className="gx-card" style={{ maxWidth: 640 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 14 }}>
+          Rôles Discord donnant accès à l'administration. Un rôle admin voit toujours la vue
+          d'ensemble et ces réglages ; les cases ci-dessous contrôlent précisément ce qu'il peut
+          modifier. Plusieurs rôles peuvent être ajoutés, chacun avec ses propres droits.
         </div>
 
-        {adminRoleIds.length === 0 && (
-          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>Aucun rôle admin configuré.</div>
+        {!loaded && <div style={{ fontSize: 12, color: "var(--muted)" }}>Chargement...</div>}
+        {loaded && adminRoles.length === 0 && (
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
+            Aucun rôle admin configuré.
+          </div>
         )}
-        {adminRoleIds.map((id) => (
-          <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <code style={{ fontFamily: "var(--mono)", fontSize: 13 }}>{id}</code>
-            {isOwner && (
-              <span className="gx-link" onClick={() => removeRole(id)}>Retirer</span>
-            )}
+
+        {adminRoles.map((r) => (
+          <div
+            key={r.roleId}
+            style={{
+              borderTop: "1px solid rgba(255,255,255,0.08)",
+              paddingTop: 12,
+              marginTop: 12,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <code style={{ fontFamily: "var(--mono)", fontSize: 13 }}>{r.roleId}</code>
+              {canManage && (
+                <span className="gx-link" onClick={() => removeRole(r.roleId)}>
+                  Retirer ce rôle
+                </span>
+              )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+              {PERMISSION_DEFS.map((p) => (
+                <label
+                  key={p.key}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 12.5,
+                    color: canManage ? "var(--text)" : "var(--muted)",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    className="gx-checkbox"
+                    checked={!!r.permissions[p.key]}
+                    disabled={!canManage}
+                    onChange={(e) => togglePermission(r.roleId, p.key, e.target.checked)}
+                  />
+                  {p.label}
+                </label>
+              ))}
+            </div>
           </div>
         ))}
 
-        {isOwner ? (
-          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        {canManage ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 18 }}>
             <input
               className="gx-input"
               placeholder="ID du rôle Discord à ajouter"
@@ -218,15 +299,16 @@ function SettingsView({ isOwner }) {
             </button>
           </div>
         ) : (
-          <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 14 }}>
-            Seul le propriétaire du site peut ajouter ou retirer des rôles admin.
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 18 }}>
+            Tu n'as pas la permission de gérer les rôles admin (coche "Ajouter / retirer des
+            rôles admin" sur ton rôle, ou demande au propriétaire du site).
           </div>
         )}
 
         {saved && <div style={{ color: "var(--green)", fontSize: 12, marginTop: 8 }}>Enregistré ✓</div>}
         <div style={{ color: "var(--muted)", fontSize: 11.5, marginTop: 12 }}>
-          Le rôle Discord de chaque entreprise se règle directement depuis la page de
-          l'entreprise (champ "Rôle Discord lié").
+          Le rôle Discord de chaque entreprise (accès patron) se règle directement depuis la page
+          de l'entreprise, sous réserve de la permission correspondante.
         </div>
       </div>
     </>
@@ -234,7 +316,10 @@ function SettingsView({ isOwner }) {
 }
 
 // ---------- Vue d'ensemble (admin) ----------
-function AdminView({ companies, isOwner, onOpenCompany, onAddCompany, onRemoveCompany }) {
+function AdminView({ companies, isOwner, permissions, onOpenCompany, onAddCompany, onRemoveCompany }) {
+  const canCreateCompany = isOwner || !!(permissions && permissions.createCompany);
+  const canDeleteCompany = isOwner || !!(permissions && permissions.deleteCompany);
+
   const companyTotals = (c) => {
     let salaires = 0, depenses = 0, ca = 0;
     c.sheets.forEach((s) => {
@@ -288,9 +373,11 @@ function AdminView({ companies, isOwner, onOpenCompany, onAddCompany, onRemoveCo
         <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5 }}>
           Entreprises
         </div>
-        <button className="gx-btn gx-btn-primary" onClick={onAddCompany}>
-          + Ajouter une entreprise
-        </button>
+        {canCreateCompany && (
+          <button className="gx-btn gx-btn-primary" onClick={onAddCompany}>
+            + Ajouter une entreprise
+          </button>
+        )}
       </div>
 
       <table className="gx-table">
@@ -321,7 +408,7 @@ function AdminView({ companies, isOwner, onOpenCompany, onAddCompany, onRemoveCo
                 <td style={{ fontFamily: "var(--mono)", color: "var(--red)" }}>{fmt(t.depenses)}</td>
                 <td style={{ fontFamily: "var(--mono)", color: "var(--neon-soft)" }}>{fmt(t.totalGeneral)}</td>
                 <td>
-                  {isOwner && (
+                  {canDeleteCompany && (
                     <span className="gx-link" onClick={() => onRemoveCompany(c.id)}>
                       Supprimer
                     </span>
@@ -337,11 +424,18 @@ function AdminView({ companies, isOwner, onOpenCompany, onAddCompany, onRemoveCo
 }
 
 // ---------- Vue entreprise ----------
-function CompanyView({ company, isAdmin, isOwner, refresh, onRemoveCompany }) {
+function CompanyView({ company, isAdmin, isOwner, permissions, refresh, onRemoveCompany }) {
   const [sheetIdx, setSheetIdx] = useState(company.sheets.length - 1);
   useEffect(() => {
     setSheetIdx(company.sheets.length - 1);
   }, [company.id]);
+
+  const perms = permissions || {};
+  const canEditCategory = isAdmin && (isOwner || !!perms.editCategory);
+  const canEditDefaultPercent = isAdmin && (isOwner || !!perms.editDefaultPercent);
+  const canEditCoffre = isAdmin && (isOwner || !!perms.editCoffre);
+  const canEditDiscordRoleId = isAdmin && (isOwner || !!perms.editDiscordRoleId);
+  const canDeleteCompany = isOwner || (isAdmin && !!perms.deleteCompany);
 
   const sheet = company.sheets[sheetIdx];
 
@@ -408,6 +502,7 @@ function CompanyView({ company, isAdmin, isOwner, refresh, onRemoveCompany }) {
                 <select
                   className="gx-input"
                   style={{ width: 190 }}
+                  disabled={!canEditCategory}
                   value={CATEGORIES.includes(company.category) ? company.category : ""}
                   onChange={(e) => patchCompany({ category: e.target.value })}
                 >
@@ -420,12 +515,12 @@ function CompanyView({ company, isAdmin, isOwner, refresh, onRemoveCompany }) {
             )}
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
               Commission par défaut
-              <Field type="number" value={company.defaultPercent} disabled={!isAdmin} onCommit={(v) => patchCompany({ defaultPercent: Number(v) || 0 })} style={{ width: 60 }} />
+              <Field type="number" value={company.defaultPercent} disabled={!canEditDefaultPercent} onCommit={(v) => patchCompany({ defaultPercent: Number(v) || 0 })} style={{ width: 60 }} />
               %
             </span>
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
               Total du coffre
-              <Field type="number" value={company.coffre} disabled={!isAdmin} onCommit={(v) => patchCompany({ coffre: Number(v) || 0 })} style={{ width: 120 }} />
+              <Field type="number" value={company.coffre} disabled={!canEditCoffre} onCommit={(v) => patchCompany({ coffre: Number(v) || 0 })} style={{ width: 120 }} />
               $
             </span>
             {isAdmin && (
@@ -434,6 +529,7 @@ function CompanyView({ company, isAdmin, isOwner, refresh, onRemoveCompany }) {
                 <Field
                   value={company.discordRoleId}
                   placeholder="ID du rôle Discord"
+                  disabled={!canEditDiscordRoleId}
                   onCommit={(v) => patchCompany({ discordRoleId: v })}
                   style={{ width: 170 }}
                 />
@@ -441,7 +537,7 @@ function CompanyView({ company, isAdmin, isOwner, refresh, onRemoveCompany }) {
             )}
           </div>
         </div>
-        {isOwner && (
+        {canDeleteCompany && (
           <button className="gx-btn gx-btn-danger" onClick={() => onRemoveCompany(company.id)}>
             Supprimer l'entreprise
           </button>
@@ -651,6 +747,7 @@ function App() {
   }
 
   const active = companies.find((c) => c.id === activeId) || companies[0];
+  const permissions = session.permissions || {};
 
   const addCompany = () => api("POST", "/api/companies").then(() => loadCompanies());
   const removeCompany = (id) => {
@@ -727,18 +824,22 @@ function App() {
             <AdminView
               companies={companies}
               isOwner={session.isOwner}
+              permissions={permissions}
               onOpenCompany={(id) => { setActiveId(id); setView("company"); }}
               onAddCompany={addCompany}
               onRemoveCompany={removeCompany}
             />
           )}
-          {view === "settings" && session.isAdmin && <SettingsView isOwner={session.isOwner} />}
+          {view === "settings" && session.isAdmin && (
+            <SettingsView isOwner={session.isOwner} permissions={permissions} />
+          )}
           {view === "company" && active && (
             <CompanyView
               key={active.id}
               company={active}
               isAdmin={session.isAdmin}
               isOwner={session.isOwner}
+              permissions={permissions}
               refresh={loadCompanies}
               onRemoveCompany={removeCompany}
             />
