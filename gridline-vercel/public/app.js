@@ -29,6 +29,7 @@ const fmt = (n) =>
   new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(Math.round(n || 0)) + " $";
 
 const SALAIRE_MAX = 10000000;
+const PRIME_MAX = 6000000;
 
 // Intervalle (ms) de rafraîchissement automatique en arrière-plan, pour que
 // les changements faits par d'autres personnes (verrouillage d'une fiche,
@@ -652,7 +653,7 @@ function CompanyView({ company, isAdmin, isOwner, permissions, refresh, onRemove
                         onCommit={(v) => patchEmployee(e.id, { percent: v === "" ? null : Number(v) })}
                       />
                     </td>
-                    <td><Field type="number" value={e.prime} disabled={locked} onCommit={(v) => patchEmployee(e.id, { prime: Number(v) || 0 })} /></td>
+                    <td><Field type="number" value={e.prime} disabled={locked} onCommit={(v) => patchEmployee(e.id, { prime: Math.min(Number(v) || 0, PRIME_MAX) })} /></td>
                     <td style={{ fontFamily: "var(--mono)", color: "var(--neon-soft)", whiteSpace: "nowrap" }}>
                       {fmt(salaire)} <span style={{ color: "var(--muted)", fontSize: 11 }}>({pct}%)</span>
                       {plafonne && <div style={{ color: "var(--red)", fontSize: 10.5 }}>Plafond 10M atteint</div>}
