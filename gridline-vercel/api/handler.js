@@ -25,6 +25,7 @@ const PERMISSION_KEYS = [
 ];
 
 const uid = () => Math.random().toString(36).slice(2, 9);
+const PRIME_MAX = 6000000;
 const today = () => new Date().toISOString().slice(0, 10);
 const plusDays = (dateStr, days) => {
   const d = new Date(dateStr);
@@ -437,7 +438,7 @@ module.exports = async (req, res) => {
         if (body.name !== undefined) e.name = body.name;
         if (body.ca !== undefined) e.ca = Number(body.ca) || 0;
         if (body.percent !== undefined) e.percent = body.percent === null || body.percent === "" ? null : Number(body.percent);
-        if (body.prime !== undefined) e.prime = Number(body.prime) || 0;
+        if (body.prime !== undefined) e.prime = Math.min(Number(body.prime) || 0, PRIME_MAX);
         if (body.paid !== undefined) e.paid = !!body.paid;
         await writeCompanies(companies);
         return json(res, 200, e);
