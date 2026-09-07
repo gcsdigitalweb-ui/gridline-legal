@@ -597,7 +597,7 @@ function CompanyView({ company, isAdmin, isOwner, permissions, refresh, onRemove
             )}
             {!isAdmin && locked && (
               <span style={{ fontSize: 11.5, color: "var(--muted)", marginLeft: "auto" }}>
-                Seul un admin peut déverrouiller cette fiche.
+                Seul un admin peut déverrouiller cette fiche (la case "Payé" reste modifiable).
               </span>
             )}
           </div>
@@ -662,7 +662,6 @@ function CompanyView({ company, isAdmin, isOwner, permissions, refresh, onRemove
                         type="checkbox"
                         className="gx-checkbox"
                         checked={!!e.paid}
-                        disabled={locked}
                         onChange={(ev) => patchEmployee(e.id, { paid: ev.target.checked })}
                       />
                     </td>
