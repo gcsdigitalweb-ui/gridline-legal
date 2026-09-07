@@ -9,7 +9,8 @@ const {
 } = process.env;
 
 // Ce compte Discord a TOUJOURS les droits admin complets, quels que soient ses roles.
-const OWNER_DISCORD_ID = "1501730550451273728";
+// Configurable via la variable d'environnement OWNER_DISCORD_ID sur Vercel.
+const OWNER_DISCORD_ID = process.env.OWNER_DISCORD_ID || "1501730550451273728";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const today = () => new Date().toISOString().slice(0, 10);
@@ -186,6 +187,7 @@ module.exports = async (req, res) => {
         defaultPercent: 10,
         coffre: 0,
         discordRoleId: "",
+        category: "",
         sheets: [{ id: uid(), dateDebut: today(), dateFin: plusDays(today(), 6), locked: false, employees: [], expenses: [] }],
       };
       companies.push(c);
@@ -205,6 +207,7 @@ module.exports = async (req, res) => {
         if (body.defaultPercent !== undefined) c.defaultPercent = Number(body.defaultPercent);
         if (body.coffre !== undefined) c.coffre = Number(body.coffre);
         if (body.discordRoleId !== undefined) c.discordRoleId = String(body.discordRoleId).trim();
+        if (body.category !== undefined) c.category = String(body.category).trim();
         await writeCompanies(companies);
         return json(res, 200, c);
       }
