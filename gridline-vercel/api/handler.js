@@ -20,14 +20,21 @@ const plusDays = (dateStr, days) => {
   return d.toISOString().slice(0, 10);
 };
 
+function normalizeAdminRoleIds(config) {
+  if (Array.isArray(config.adminRoleIds)) return config.adminRoleIds;
+  if (config.adminRoleId) return [config.adminRoleId]; // migration ancien format
+  return [];
+}
+
 function computePermissions(config, companies, discordId, discordRoles) {
-  const bootstrap = !config.adminRoleId;
+  const adminRoleIds = normalizeAdminRoleIds(config);
+  const bootstrap = adminRoleIds.length === 0;
   const isOwner = discordId === OWNER_DISCORD_ID;
-  const isAdmin = isOwner || bootstrap || (config.adminRoleId && discordRoles.includes(config.adminRoleId));
+  const isAdmin = isOwner || bootstrap || adminRoleIds.some((id) => discordRoles.includes(id));
   const patronCompanyIds = companies
     .filter((c) => c.discordRoleId && discordRoles.includes(c.discordRoleId))
     .map((c) => c.id);
-  return { isAdmin: !!isAdmin, patronCompanyIds, bootstrap };
+  return { isAdmin: !!isAdmin, isOwner: !!isOwner, patronCompanyIds, bootstrap, adminRoleIds };
 }
 
 function findSheet(companies, companyId, sheetId) {
@@ -149,6 +156,7 @@ module.exports = async (req, res) => {
         loggedIn: true,
         user: { id: discord.id, username: discord.username, avatar: discord.avatar },
         isAdmin: perms.isAdmin,
+        isOwner: perms.isOwner,
         bootstrap: perms.bootstrap,
         patronCompanyIds: perms.patronCompanyIds,
       });
@@ -164,14 +172,31 @@ module.exports = async (req, res) => {
     // /api/config
     if (pathname === "/api/config" && method === "GET") {
       if (!perms.isAdmin) return json(res, 403, { error: "Reserve aux admins" });
-      return json(res, 200, config);
+      return json(res, 200, { adminRoleIds: perms.adminRoleIds });
     }
     if (pathname === "/api/config" && method === "PUT") {
-      if (!perms.isAdmin) return json(res, 403, { error: "Reserve aux admins" });
+      // Seul le owner peut gerer la liste des roles admin, sauf lors de la toute
+      // premiere initialisation (aucun role admin configure du tout).
+      if (!perms.isOwner && !perms.bootstrap) {
+        return json(res, 403, { error: "Reserve au propriétaire" });
+      }
       const body = await readBody(req);
-      if (typeof body.adminRoleId === "string") config.adminRoleId = body.adminRoleId.trim();
+      if (Array.isArray(body.adminRoleIds)) {
+        config.adminRoleIds = body.adminRoleIds.map((id) => String(id).trim()).filter(Boolean);
+        delete config.adminRoleId; // nettoie l'ancien format
+      } else if (typeof body.addRoleId === "string" && body.addRoleId.trim()) {
+        const current = normalizeAdminRoleIds(config);
+        const roleId = body.addRoleId.trim();
+        if (!current.includes(roleId)) current.push(roleId);
+        config.adminRoleIds = current;
+        delete config.adminRoleId;
+      } else if (typeof body.removeRoleId === "string") {
+        const current = normalizeAdminRoleIds(config);
+        config.adminRoleIds = current.filter((id) => id !== body.removeRoleId.trim());
+        delete config.adminRoleId;
+      }
       await writeConfig(config);
-      return json(res, 200, config);
+      return json(res, 200, { adminRoleIds: normalizeAdminRoleIds(config) });
     }
 
     // /api/companies
@@ -212,7 +237,7 @@ module.exports = async (req, res) => {
         return json(res, 200, c);
       }
       if (method === "DELETE") {
-        if (!perms.isAdmin) return json(res, 403, { error: "Reserve aux admins" });
+        if (!perms.isOwner) return json(res, 403, { error: "Reserve au propriétaire" });
         companies = companies.filter((c) => c.id !== companyId);
         await writeCompanies(companies);
         return json(res, 200, { ok: true });
