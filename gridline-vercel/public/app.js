@@ -1,5 +1,18 @@
 const { useState, useEffect, useMemo, useCallback } = React;
 
+const CATEGORIES = [
+  "SAFD",
+  "SAPD",
+  "Restauration",
+  "Commerces",
+  "Entreprises Privées",
+  "Farm Nord",
+  "Farm Sud",
+  "Événementiels",
+  "Concessions",
+  "Garages",
+];
+
 const fmt = (n) =>
   new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(Math.round(n || 0)) + " $";
 
@@ -361,6 +374,22 @@ function CompanyView({ company, isAdmin, refresh, onRemoveCompany }) {
             </div>
           )}
           <div style={{ display: "flex", alignItems: "center", gap: 16, fontSize: 13, color: "var(--muted)", flexWrap: "wrap" }}>
+            {isAdmin && (
+              <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                Catégorie
+                <select
+                  className="gx-input"
+                  style={{ width: 190 }}
+                  value={CATEGORIES.includes(company.category) ? company.category : ""}
+                  onChange={(e) => patchCompany({ category: e.target.value })}
+                >
+                  <option value="">Aucune (Autres)</option>
+                  {CATEGORIES.map((cat) => (
+                    <option key={cat} value={cat}>{cat}</option>
+                  ))}
+                </select>
+              </span>
+            )}
             <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
               Commission par défaut
               <Field type="number" value={company.defaultPercent} disabled={!isAdmin} onCommit={(v) => patchCompany({ defaultPercent: Number(v) || 0 })} style={{ width: 60 }} />
@@ -630,19 +659,36 @@ function App() {
               </div>
             </>
           )}
-          <div className="gx-nav-section">Entreprises</div>
-          {companies.map((c) => (
-            <div
-              key={c.id}
-              className={`gx-nav-item ${view === "company" && activeId === c.id ? "active" : ""}`}
-              onClick={() => {
-                setActiveId(c.id);
-                setView("company");
-              }}
-            >
-              {c.name}
-            </div>
-          ))}
+          {(() => {
+            const grouped = {};
+            CATEGORIES.forEach((cat) => (grouped[cat] = []));
+            grouped["Autres"] = [];
+            companies.forEach((c) => {
+              const cat = CATEGORIES.includes(c.category) ? c.category : "Autres";
+              grouped[cat].push(c);
+            });
+            const catList = [...CATEGORIES, "Autres"];
+            return catList.map((cat) => {
+              if (grouped[cat].length === 0) return null;
+              return (
+                <div key={cat}>
+                  <div className="gx-nav-section">{cat}</div>
+                  {grouped[cat].map((c) => (
+                    <div
+                      key={c.id}
+                      className={`gx-nav-item ${view === "company" && activeId === c.id ? "active" : ""}`}
+                      onClick={() => {
+                        setActiveId(c.id);
+                        setView("company");
+                      }}
+                    >
+                      {c.name}
+                    </div>
+                  ))}
+                </div>
+              );
+            });
+          })()}
           {companies.length === 0 && (
             <div style={{ fontSize: 12, color: "var(--muted)" }}>Aucune entreprise accessible.</div>
           )}
