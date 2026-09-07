@@ -154,23 +154,29 @@ function BootstrapBanner({ onSaved }) {
 }
 
 // ---------- Réglages (admin) ----------
-function SettingsView() {
-  const [config, setConfig] = useState(null);
-  const [roleId, setRoleId] = useState("");
+function SettingsView({ isOwner }) {
+  const [adminRoleIds, setAdminRoleIds] = useState([]);
+  const [newRoleId, setNewRoleId] = useState("");
   const [saved, setSaved] = useState(false);
 
+  const load = () => api("GET", "/api/config").then((c) => setAdminRoleIds(c.adminRoleIds || []));
+
   useEffect(() => {
-    api("GET", "/api/config").then((c) => {
-      setConfig(c);
-      setRoleId(c.adminRoleId || "");
-    });
+    load();
   }, []);
 
-  const save = async () => {
-    const c = await api("PUT", "/api/config", { adminRoleId: roleId.trim() });
-    setConfig(c);
+  const addRole = async () => {
+    if (!newRoleId.trim()) return;
+    const c = await api("PUT", "/api/config", { addRoleId: newRoleId.trim() });
+    setAdminRoleIds(c.adminRoleIds || []);
+    setNewRoleId("");
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const removeRole = async (roleId) => {
+    const c = await api("PUT", "/api/config", { removeRoleId: roleId });
+    setAdminRoleIds(c.adminRoleIds || []);
   };
 
   return (
@@ -181,26 +187,46 @@ function SettingsView() {
       <p style={{ color: "var(--muted)", fontSize: 13, margin: "0 0 20px" }}>
         ID du serveur Discord relié : <code style={{ fontFamily: "var(--mono)" }}>1418719996665921546</code>
       </p>
-      <div className="gx-card" style={{ maxWidth: 480 }}>
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-          Rôle Discord donnant les droits admin (accès total : vue d'ensemble + toutes les
-          entreprises)
+      <div className="gx-card" style={{ maxWidth: 520 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>
+          Rôles Discord donnant les droits admin (accès total : vue d'ensemble + toutes les
+          entreprises). Plusieurs rôles peuvent être ajoutés.
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <input
-            className="gx-input"
-            placeholder="ID du rôle Discord"
-            value={roleId}
-            onChange={(e) => setRoleId(e.target.value)}
-          />
-          <button className="gx-btn gx-btn-primary" onClick={save}>
-            Enregistrer
-          </button>
-        </div>
+
+        {adminRoleIds.length === 0 && (
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>Aucun rôle admin configuré.</div>
+        )}
+        {adminRoleIds.map((id) => (
+          <div key={id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <code style={{ fontFamily: "var(--mono)", fontSize: 13 }}>{id}</code>
+            {isOwner && (
+              <span className="gx-link" onClick={() => removeRole(id)}>Retirer</span>
+            )}
+          </div>
+        ))}
+
+        {isOwner ? (
+          <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+            <input
+              className="gx-input"
+              placeholder="ID du rôle Discord à ajouter"
+              value={newRoleId}
+              onChange={(e) => setNewRoleId(e.target.value)}
+            />
+            <button className="gx-btn gx-btn-primary" onClick={addRole}>
+              Ajouter
+            </button>
+          </div>
+        ) : (
+          <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 14 }}>
+            Seul le propriétaire du site peut ajouter ou retirer des rôles admin.
+          </div>
+        )}
+
         {saved && <div style={{ color: "var(--green)", fontSize: 12, marginTop: 8 }}>Enregistré ✓</div>}
         <div style={{ color: "var(--muted)", fontSize: 11.5, marginTop: 12 }}>
           Le rôle Discord de chaque entreprise se règle directement depuis la page de
-          l'entreprise (bouton "Rôle Discord lié").
+          l'entreprise (champ "Rôle Discord lié").
         </div>
       </div>
     </>
@@ -208,7 +234,7 @@ function SettingsView() {
 }
 
 // ---------- Vue d'ensemble (admin) ----------
-function AdminView({ companies, onOpenCompany, onAddCompany, onRemoveCompany }) {
+function AdminView({ companies, isOwner, onOpenCompany, onAddCompany, onRemoveCompany }) {
   const companyTotals = (c) => {
     let salaires = 0, depenses = 0, ca = 0;
     c.sheets.forEach((s) => {
@@ -295,9 +321,11 @@ function AdminView({ companies, onOpenCompany, onAddCompany, onRemoveCompany }) 
                 <td style={{ fontFamily: "var(--mono)", color: "var(--red)" }}>{fmt(t.depenses)}</td>
                 <td style={{ fontFamily: "var(--mono)", color: "var(--neon-soft)" }}>{fmt(t.totalGeneral)}</td>
                 <td>
-                  <span className="gx-link" onClick={() => onRemoveCompany(c.id)}>
-                    Supprimer
-                  </span>
+                  {isOwner && (
+                    <span className="gx-link" onClick={() => onRemoveCompany(c.id)}>
+                      Supprimer
+                    </span>
+                  )}
                 </td>
               </tr>
             );
@@ -309,7 +337,7 @@ function AdminView({ companies, onOpenCompany, onAddCompany, onRemoveCompany }) 
 }
 
 // ---------- Vue entreprise ----------
-function CompanyView({ company, isAdmin, refresh, onRemoveCompany }) {
+function CompanyView({ company, isAdmin, isOwner, refresh, onRemoveCompany }) {
   const [sheetIdx, setSheetIdx] = useState(company.sheets.length - 1);
   useEffect(() => {
     setSheetIdx(company.sheets.length - 1);
@@ -413,7 +441,7 @@ function CompanyView({ company, isAdmin, refresh, onRemoveCompany }) {
             )}
           </div>
         </div>
-        {isAdmin && (
+        {isOwner && (
           <button className="gx-btn gx-btn-danger" onClick={() => onRemoveCompany(company.id)}>
             Supprimer l'entreprise
           </button>
@@ -698,17 +726,19 @@ function App() {
           {view === "admin" && session.isAdmin && (
             <AdminView
               companies={companies}
+              isOwner={session.isOwner}
               onOpenCompany={(id) => { setActiveId(id); setView("company"); }}
               onAddCompany={addCompany}
               onRemoveCompany={removeCompany}
             />
           )}
-          {view === "settings" && session.isAdmin && <SettingsView />}
+          {view === "settings" && session.isAdmin && <SettingsView isOwner={session.isOwner} />}
           {view === "company" && active && (
             <CompanyView
               key={active.id}
               company={active}
               isAdmin={session.isAdmin}
+              isOwner={session.isOwner}
               refresh={loadCompanies}
               onRemoveCompany={removeCompany}
             />
